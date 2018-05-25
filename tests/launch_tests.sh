@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SANDBOX="../fssb -- "
-RUNNER="python ./tests.py"
+RUNNER="python2 ./tests.py"
 
 testcases=(
 	'test_no_syscalls'
