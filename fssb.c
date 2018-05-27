@@ -28,12 +28,16 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/signal.h>
 
 #include "proxyfile.h"
 #include "arguments.h"
 #include "utils.h"
 
 #define RDONLY_MEM_WRITE_SIZE 256
+
+int times_called[500];
+int unhandled[500];
 
 long first_rxp_mem = -1;
 long write_slots[6];
@@ -73,7 +77,7 @@ int handle_syscalls(pid_t child) {
         for(i = 0; i < 6; i++)
             write_slots[i] = first_rxp_mem + i*RDONLY_MEM_WRITE_SIZE;
     }
-
+    ++times_called[syscall];
     switch (syscall) {
         case SYS_exit:
         case SYS_exit_group: {
@@ -125,7 +129,6 @@ int handle_syscalls(pid_t child) {
             set_syscall_arg(child, 0, orig_word);
             break;
         }
-        case SYS_unlink:
         case SYS_unlinkat: {
             /* int unlink(const char *pathname); */
             /* int unlinkat(int dirfd, const char *pathname, int flags); */
@@ -137,7 +140,49 @@ int handle_syscalls(pid_t child) {
             long orig_word = get_syscall_arg(child, swap_arg);
             char *pathname = get_string(child, orig_word);
 
-            fprintf(debug_file, "unlink %s\n", pathname);
+            fprintf(debug_file, "unlinkat %s\n", pathname);
+
+            proxyfile *cur = search_proxyfile(list, pathname);
+            char *new_name;
+
+            if(cur) /* it's a file we've previously written to */
+                new_name = cur->proxy_path;
+            else {
+                new_name = proxy_path(SANDBOX_DIR, pathname);
+
+                struct stat sb;
+                if(!stat(pathname, &sb)) /* this file actually exists */
+                    fclose(fopen(new_name, "w"));
+                else /* this file doesn't exist; so let them try to remove it */
+                    new_name = pathname;
+            }
+
+            if(new_name != pathname) {
+                write_string(child, write_slots[swap_arg], new_name);
+                set_syscall_arg(child, swap_arg, write_slots[swap_arg]);
+            }
+
+            int retval;
+            if(finish_and_return(child, syscall, &retval) == 0)
+                return 0;
+
+            set_syscall_arg(child, swap_arg, orig_word);
+
+            if(cur) /* let's take this off our records */
+                delete_proxyfile(list, cur);
+            else /* we malloc'd some memory, let's free it */
+                free(new_name);
+            break;
+        }
+        case SYS_unlink: {
+            int swap_arg = 0;
+            if(syscall == SYS_unlinkat)
+                swap_arg = 1;
+
+            long orig_word = get_syscall_arg(child, swap_arg);
+            char *pathname = get_string(child, orig_word);
+
+            fprintf(debug_file, "unlinkat %s\n", pathname);
 
             proxyfile *cur = search_proxyfile(list, pathname);
             char *new_name;
@@ -219,7 +264,7 @@ int handle_syscalls(pid_t child) {
             char *pathname = get_string(child, orig_word);
 
             proxyfile *cur = search_proxyfile(list, pathname);
-
+            // fprintf(debug_file, "accessing pathname = %s\n", pathname);
             if(cur) { /* it's a file we've previously written to */
                 write_string(child, write_slots[0], cur->proxy_path);
                 set_syscall_arg(child, 0, write_slots[0]);
@@ -273,6 +318,98 @@ int handle_syscalls(pid_t child) {
 
             set_syscall_arg(child, path_arg, orig_word);
             break;
+        }
+        case SYS_rmdir: {
+            const int path_arg = 0;
+            long orig_word = get_syscall_arg(child, path_arg);
+            char *pathname = get_string(child, orig_word);
+            fprintf(debug_file, "handling SYS_rmdir with pathname = %s\n", pathname);
+            kill(child, SIGKILL);
+            exit(0);
+        }
+        case SYS_mkdir: {
+            fprintf(debug_file, "killing mkdir\n");
+            kill(child, SIGKILL);
+            exit(0);
+        }
+        case SYS_mkdirat: {
+            fprintf(debug_file, "killing mkdirat\n");
+            kill(child, SIGKILL);
+            exit(0);
+        }
+        case SYS_mknod: {
+            fprintf(debug_file, "killing mknod\n");
+            kill(child, SIGKILL);
+            exit(0);
+        }
+        case SYS_mknodat: {
+            fprintf(debug_file, "killing mknodat\n");
+            kill(child, SIGKILL);
+            exit(0);
+        }
+        case SYS_execve: {
+            const int path_arg = 0;
+            long orig_word = get_syscall_arg(child, path_arg);
+            char *pathname = get_string(child, orig_word);
+            fprintf(debug_file, "handling SYS_execve with pathname = %s\n", pathname);
+            break;
+        }
+        case SYS_getcwd: {
+            const int path_arg = 0;
+            long orig_word = get_syscall_arg(child, path_arg);
+            char *pathname = get_string(child, orig_word);
+            fprintf(debug_file, "handling getcwd %s\n", pathname);
+        }
+        case SYS_readlink: {
+            const int path_arg = 0;
+            long orig_word = get_syscall_arg(child, path_arg);
+            char *pathname = get_string(child, orig_word);
+            fprintf(debug_file, "handling readlink path = %s\n", pathname);
+        }
+        case SYS_getrandom: {
+            const int path_arg = 0;
+            long orig_word = get_syscall_arg(child, path_arg);
+            char *pathname = get_string(child, orig_word);
+            fprintf(debug_file, "handling getrandom buf = %s\n", pathname);
+        }
+        case SYS_chdir: {
+            const int path_arg = 0;
+            long orig_word = get_syscall_arg(child, path_arg);
+            char *pathname = get_string(child, orig_word);
+            fprintf(debug_file, "handling chdir buf = %s\n", pathname);
+        }
+        case SYS_fchdir: {
+            const int path_arg = 0;
+            long orig_word = get_syscall_arg(child, path_arg);
+            char *pathname = get_string(child, orig_word);
+            fprintf(debug_file, "handling chdir buf = %s\n", pathname);
+        }
+        case SYS_link: {
+            long word0 = get_syscall_arg(child, 0);
+            long word1 = get_syscall_arg(child, 1);
+
+            char *oldname = get_string(child, word0);
+            char *newname = get_string(child, word1);
+            printf("handling link oldname = %s, newname = %s\n", oldname, newname);
+            break;
+        }
+        case SYS_fork: {
+            fprintf(debug_file, "FORKING\n");
+            kill(child, SIGKILL);
+            exit(0);
+        }
+        case SYS_vfork: {
+            fprintf(debug_file, "vFORKING\n");
+            kill(child, SIGKILL);
+            exit(0);
+        }
+        case SYS_clone: {
+            fprintf(debug_file, "CLONING\n");
+            kill(child, SIGKILL);
+            exit(0);
+        }
+        default: {
+            unhandled[syscall] = 1;
         }
     }
     return 1;
@@ -367,5 +504,10 @@ int main(int argc, char **argv) {
         rmdir(SANDBOX_DIR);
     }
 
+    for (int i = 0; i < 500; ++i) {
+        if (times_called[i]) {
+            fprintf(debug_file, "syscall %d was called %d times, UNhandled = %d\n", i, times_called[i], unhandled[i]);
+        }
+    }
     return 0;
 }
